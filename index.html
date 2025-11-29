@@ -124,7 +124,7 @@
                 
                 <div class="flex items-center justify-center gap-2 mt-2">
                     <input type="checkbox" id="audibleMode" class="w-5 h-5 accent-green-500">
-                    <label for="audibleMode" class="text-green-300">Audible Mode (Debug)</label>
+                    <label for="audibleMode" class="text-green-300">Audible Mode (Soft Chirps)</label>
                 </div>
             </div>
             <p class="mt-4 text-xs text-green-700">Warning: Requires quiet environment.</p>
@@ -198,8 +198,8 @@
         // --- CONFIGURATION ---
         const CONFIG = {
             MODES: {
-                ULTRASONIC: { mark: 19000, space: 18000, preamble: 17500 },
-                AUDIBLE: { mark: 880, space: 440, preamble: 660 }
+                ULTRASONIC: { mark: 19000, space: 18000, preamble: 17500, volume: 1.0 },
+                AUDIBLE: { mark: 1200, space: 1500, preamble: 1000, volume: 0.1 } // 10% volume, softer frequencies
             },
             BIT_DURATION: 0.08, 
             PREAMBLE_DURATION: 0.4, 
@@ -281,6 +281,7 @@
 
             playSequence(bits) {
                 const freqs = this.getFreqs();
+                const volume = freqs.volume || 1.0;
                 const osc = this.ctx.createOscillator();
                 const gain = this.ctx.createGain();
                 
@@ -292,7 +293,7 @@
 
                 // Preamble
                 osc.frequency.setValueAtTime(freqs.preamble, t);
-                gain.gain.setValueAtTime(1, t);
+                gain.gain.setValueAtTime(volume, t);
                 t += CONFIG.PREAMBLE_DURATION;
 
                 // Gap
@@ -301,7 +302,7 @@
 
                 // Start Bit
                 osc.frequency.setValueAtTime(freqs.mark, t);
-                gain.gain.setValueAtTime(1, t);
+                gain.gain.setValueAtTime(volume, t);
                 t += CONFIG.BIT_DURATION;
 
                 // Data
