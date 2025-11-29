@@ -14,6 +14,7 @@
             font-family: 'VT323', monospace;
             overflow-x: hidden;
             -webkit-font-smoothing: antialiased;
+            touch-action: manipulation; /* Improves touch response */
         }
 
         /* CRT Scanline Effect */
@@ -117,19 +118,10 @@
                 3. Grant Mic permissions.
             </p>
             <div class="flex flex-col gap-4 justify-center">
-                 <button onclick="app.init()" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3 px-8 text-xl rounded shadow-[0_0_15px_rgba(74,222,128,0.5)] transition-all">
+                 <button id="initBtn" onclick="app.init()" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3 px-8 text-xl rounded shadow-[0_0_15px_rgba(74,222,128,0.5)] transition-all">
                     INITIALIZE COMMS
                 </button>
                 
-                <div class="flex gap-2">
-                    <button onclick="downloadGame()" class="flex-1 bg-transparent border border-green-600 hover:bg-green-900 text-green-400 font-bold py-2 px-2 rounded transition-all text-sm">
-                        SAVE FILE
-                    </button>
-                    <button onclick="copyGameCode()" class="flex-1 bg-transparent border border-green-600 hover:bg-green-900 text-green-400 font-bold py-2 px-2 rounded transition-all text-sm">
-                        COPY CODE
-                    </button>
-                </div>
-
                 <div class="flex items-center justify-center gap-2 mt-2">
                     <input type="checkbox" id="audibleMode" class="w-5 h-5 accent-green-500">
                     <label for="audibleMode" class="text-green-300">Audible Mode (Debug)</label>
@@ -203,78 +195,6 @@
     </div>
 
     <script>
-        // --- DOWNLOAD & SHARE LOGIC ---
-        
-        function getCleanHTML() {
-            // Get current HTML
-            const docClone = document.documentElement.cloneNode(true);
-            
-            // RESET UI STATE
-            const overlay = docClone.querySelector('#initOverlay');
-            const gameUI = docClone.querySelector('#gameUI');
-            const log = docClone.querySelector('#gameLog');
-            const pGrid = docClone.querySelector('#playerGrid');
-            const eGrid = docClone.querySelector('#enemyGrid');
-
-            if (overlay) overlay.classList.remove('hidden');
-            if (gameUI) {
-                gameUI.classList.add('hidden');
-                gameUI.classList.remove('flex');
-            }
-            if (log) log.innerHTML = '<div>> SYSTEM INITIALIZED...</div>';
-            if (pGrid) pGrid.innerHTML = ''; 
-            if (eGrid) eGrid.innerHTML = '';
-            
-            // Remove the scripts injected by preview tools if any
-            const scripts = docClone.querySelectorAll('script');
-            // We keep the last script (our game logic) but might want to be careful
-            // For now, we assume the file is self contained.
-
-            return "<!DOCTYPE html>\n" + docClone.outerHTML;
-        }
-
-        function downloadGame() {
-            try {
-                const htmlContent = getCleanHTML();
-                const blob = new Blob([htmlContent], { type: 'text/html' });
-                const url = URL.createObjectURL(blob);
-                
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = url;
-                a.download = 'sonar_battleship.html';
-                
-                document.body.appendChild(a);
-                a.click();
-                
-                // Cleanup
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                }, 100);
-                
-                alert("Download Started! Check your notifications.\n\nNOTE: You must UPLOAD this file to a site like 'tiiny.host' to play. Opening it directly will block the microphone.");
-            } catch (e) {
-                console.error("Download failed:", e);
-                alert("Download blocked by browser.\n\nOption 1: Use the 'Copy Code' button instead.\nOption 2: Use Chrome menu -> Share -> Print -> Save as PDF (not ideal) or 'Save Page As'.");
-            }
-        }
-
-        function copyGameCode() {
-            try {
-                const htmlContent = getCleanHTML();
-                navigator.clipboard.writeText(htmlContent).then(() => {
-                    alert("Game code copied to clipboard!\n\nPaste it into a text file named 'game.html' or send it via message.");
-                }).catch(err => {
-                    console.error(err);
-                    alert("Could not copy automatically. Please select all text and copy manually.");
-                });
-            } catch (e) {
-                alert("Copy failed.");
-            }
-        }
-
-
         // --- CONFIGURATION ---
         const CONFIG = {
             MODES: {
@@ -302,17 +222,34 @@
 
             async init(mode = 'ULTRASONIC') {
                 this.mode = mode;
+                
+                // 1. Context Creation (Must be sync in click handler)
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
                 
-                // SECURITY CHECK
-                if (window.location.protocol === 'file:') {
-                     alert("⚠️ SECURITY RESTRICTION ⚠️\n\nAndroid Chrome disables the microphone for files opened directly from storage (file://).\n\nHOW TO FIX:\n1. Upload this file to a free host like 'tiiny.host' or 'Netlify Drop'.\n2. Open the LINK they give you.\n\nThe game will work perfectly over a link (HTTPS).");
-                     return false;
+                if (!AudioContext) {
+                    alert("Your browser does not support Web Audio API.");
+                    return false;
+                }
+
+                try {
+                    this.ctx = new AudioContext();
+                    // iOS/Android require resuming state if started 'suspended'
+                    if (this.ctx.state === 'suspended') {
+                        await this.ctx.resume();
+                    }
+                } catch (e) {
+                    alert("Could not create Audio Context: " + e.message);
+                    return false;
                 }
                 
-                this.ctx = new AudioContext();
-                
+                // 2. Microphone Access
                 try {
+                    // Check if mediaDevices exists (could be undefined in insecure contexts)
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        alert("Microphone API not available. Ensure you are using HTTPS (GitHub Pages) or localhost.");
+                        return false;
+                    }
+
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
                     const source = this.ctx.createMediaStreamSource(stream);
                     this.analyser = this.ctx.createAnalyser();
@@ -324,7 +261,7 @@
                     return true;
                 } catch (e) {
                     console.error("Mic Error:", e);
-                    alert("Microphone access denied. \n\nIf you are opening this file directly, please read the previous popup about hosting it online.");
+                    alert("Microphone access denied or error: " + e.name + " - " + e.message + "\n\nCheck your browser permissions settings.");
                     return false;
                 }
             }
@@ -353,23 +290,28 @@
                 const now = this.ctx.currentTime;
                 let t = now;
 
+                // Preamble
                 osc.frequency.setValueAtTime(freqs.preamble, t);
                 gain.gain.setValueAtTime(1, t);
                 t += CONFIG.PREAMBLE_DURATION;
 
+                // Gap
                 gain.gain.setValueAtTime(0, t);
                 t += 0.05;
 
+                // Start Bit
                 osc.frequency.setValueAtTime(freqs.mark, t);
                 gain.gain.setValueAtTime(1, t);
                 t += CONFIG.BIT_DURATION;
 
+                // Data
                 bits.forEach(bit => {
                     const f = bit === 1 ? freqs.mark : freqs.space;
                     osc.frequency.setValueAtTime(f, t);
                     t += CONFIG.BIT_DURATION;
                 });
 
+                // Stop Bit
                 osc.frequency.setValueAtTime(freqs.space, t);
                 t += CONFIG.BIT_DURATION;
 
@@ -418,10 +360,309 @@
 
                 if (now - this.lastDetectTime < 2000) return; 
 
+                // Simple Threshold check
                 if (preambleEnergy > 150) {
                     console.log("Preamble Detected!");
                     this.lastDetectTime = now; 
                     
                     const statusEl = document.getElementById('connectionStatus');
                     statusEl.innerText = "RECEIVING SIGNAL...";
-                    statusEl.classList.add('text-red-5
+                    statusEl.classList.add('text-red-500');
+                    
+                    setTimeout(() => {
+                        this.readMessage();
+                    }, (CONFIG.PREAMBLE_DURATION * 1000) + 20); 
+                }
+            }
+
+            async readMessage() {
+                const freqs = this.getFreqs();
+                const binSize = this.ctx.sampleRate / (this.analyser.fftSize);
+                const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+
+                const bitsToRead = 14; 
+                let rawBits = [];
+
+                const sample = () => {
+                    this.analyser.getByteFrequencyData(dataArray);
+                    const markE = (dataArray[Math.floor(freqs.mark/binSize)] || 0);
+                    const spaceE = (dataArray[Math.floor(freqs.space/binSize)] || 0);
+                    return markE > spaceE ? 1 : 0;
+                };
+
+                let bitIndex = 0;
+                const interval = setInterval(() => {
+                    const bit = sample();
+                    rawBits.push(bit);
+                    bitIndex++;
+
+                    if(bitIndex >= bitsToRead) {
+                        clearInterval(interval);
+                        this.decodeMessage(rawBits);
+                        
+                        const statusEl = document.getElementById('connectionStatus');
+                        statusEl.innerText = "LISTENING...";
+                        statusEl.classList.remove('text-red-500');
+                    }
+                }, CONFIG.BIT_DURATION * 1000);
+            }
+
+            decodeMessage(rawBits) {
+                console.log("Raw Bits:", rawBits);
+                let type = 0;
+                for(let i=0; i<4; i++) {
+                    if(rawBits[1+i]) type |= (1 << i);
+                }
+
+                let payload = 0;
+                for(let i=0; i<8; i++) {
+                    if(rawBits[5+i]) payload |= (1 << i);
+                }
+                
+                app.log(`Received: TYPE ${type}, DATA ${payload}`);
+                if (this.callback) this.callback(type, payload);
+            }
+
+            drawVisualizer(dataArray) {
+                const canvas = document.getElementById("visualizer");
+                const canvasCtx = canvas.getContext("2d");
+                const width = canvas.width;
+                const height = canvas.height;
+
+                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                canvasCtx.fillRect(0, 0, width, height);
+
+                let startBin = this.mode === 'ULTRASONIC' ? 800 : 0;
+                let endBin = this.mode === 'ULTRASONIC' ? 1000 : 200;
+                let x = 0;
+
+                canvasCtx.beginPath();
+                canvasCtx.strokeStyle = '#4ade80';
+                canvasCtx.lineWidth = 1;
+
+                for(let i = startBin; i < endBin; i++) {
+                    const barHeight = dataArray[i];
+                    const y = height - (barHeight / 255 * height);
+                    if(i===startBin) canvasCtx.moveTo(x, y);
+                    else canvasCtx.lineTo(x, y);
+                    x += width / (endBin - startBin);
+                }
+                canvasCtx.stroke();
+            }
+        }
+
+        // --- GAME LOGIC ---
+        class BattleshipGame {
+            constructor(modem) {
+                this.modem = modem;
+                this.myBoard = Array(100).fill(0); 
+                this.enemyBoard = Array(100).fill(0); 
+                this.myShips = []; 
+                this.phase = 'SETUP'; 
+                this.lastTarget = -1;
+            }
+
+            init() {
+                this.renderGrid('playerGrid', this.myBoard, true);
+                this.renderGrid('enemyGrid', this.enemyBoard, false);
+                this.modem.callback = (t, p) => this.handleMessage(t, p);
+            }
+
+            renderGrid(elementId, boardData, isPlayer) {
+                const el = document.getElementById(elementId);
+                el.innerHTML = '';
+                boardData.forEach((cell, idx) => {
+                    const div = document.createElement('div');
+                    div.className = 'grid-cell';
+                    
+                    const row = Math.floor(idx / 10);
+                    const col = idx % 10;
+                    
+                    if (isPlayer && cell === 1) div.classList.add('ship');
+                    if (cell === 2) div.classList.add('hit');
+                    if (cell === 3) div.classList.add('miss');
+                    if (cell === 4) div.classList.add('sunk');
+
+                    if (!isPlayer) {
+                         div.onclick = () => this.handleGridClick(idx);
+                    }
+                    el.appendChild(div);
+                });
+            }
+
+            autoPlaceShips() {
+                this.myBoard.fill(0);
+                this.myShips = [];
+                CONFIG.SHIPS.forEach(size => {
+                    let placed = false;
+                    while (!placed) {
+                        const horizontal = Math.random() > 0.5;
+                        const row = Math.floor(Math.random() * 10);
+                        const col = Math.floor(Math.random() * 10);
+                        const idx = row * 10 + col;
+                        if (this.canPlace(idx, size, horizontal)) {
+                            this.placeShip(idx, size, horizontal);
+                            placed = true;
+                        }
+                    }
+                });
+                this.renderGrid('playerGrid', this.myBoard, true);
+                document.getElementById('startGameBtn').classList.remove('hidden');
+                app.log("Ships repositioned.");
+            }
+
+            canPlace(startIdx, size, horizontal) {
+                const r = Math.floor(startIdx / 10);
+                const c = startIdx % 10;
+                if (horizontal) {
+                    if (c + size > 10) return false;
+                    for(let i=0; i<size; i++) if(this.myBoard[startIdx + i] !== 0) return false;
+                } else {
+                    if (r + size > 10) return false;
+                    for(let i=0; i<size; i++) if(this.myBoard[startIdx + i*10] !== 0) return false;
+                }
+                return true;
+            }
+
+            placeShip(startIdx, size, horizontal) {
+                const indices = [];
+                for(let i=0; i<size; i++) {
+                    const idx = horizontal ? startIdx + i : startIdx + i*10;
+                    this.myBoard[idx] = 1;
+                    indices.push(idx);
+                }
+                this.myShips.push({ indices, hits: 0 });
+            }
+
+            finalizeSetup() {
+                if(this.myShips.length < 5) this.autoPlaceShips();
+                this.phase = 'READY';
+                document.getElementById('startGameBtn').classList.add('hidden');
+                document.getElementById('autoPlaceBtn').classList.add('hidden');
+                document.getElementById('resetBtn').classList.add('hidden');
+                document.getElementById('phaseDisplay').innerText = "AWAITING FIRE";
+                app.log("System Armed. Waiting for incoming signal or tap enemy grid to fire.");
+            }
+
+            resetBoard() {
+                this.myBoard.fill(0);
+                this.myShips = [];
+                this.renderGrid('playerGrid', this.myBoard, true);
+                document.getElementById('startGameBtn').classList.add('hidden');
+            }
+
+            handleGridClick(idx) {
+                if (this.phase === 'SETUP') {
+                    app.log("Setup not complete.");
+                    return;
+                }
+                if (this.enemyBoard[idx] !== 0) {
+                    app.log("Sector already targeted.");
+                    return;
+                }
+
+                this.lastTarget = idx;
+                // Visual Pending
+                const cells = document.getElementById('enemyGrid').children;
+                if(cells[idx]) cells[idx].style.backgroundColor = '#fef08a';
+
+                const r = Math.floor(idx / 10);
+                const c = idx % 10;
+                app.log(`FIRING ON ${String.fromCharCode(65+r)}${c}...`);
+                const payload = (r << 4) | c;
+                this.modem.transmit(1, payload); 
+                document.getElementById('phaseDisplay').innerText = "TRANSMITTING...";
+            }
+
+            handleMessage(type, payload) {
+                if (type === 1) { // INCOMING FIRE
+                    const r = (payload >> 4) & 0xF;
+                    const c = payload & 0xF;
+                    const idx = r * 10 + c;
+                    
+                    if (idx < 0 || idx >= 100) return; 
+
+                    app.log(`INCOMING FIRE DETECTED: ${String.fromCharCode(65+r)}${c}`);
+                    
+                    let result = 0; 
+                    if (this.myBoard[idx] === 1) {
+                        this.myBoard[idx] = 2; 
+                        result = 1; 
+                        const ship = this.myShips.find(s => s.indices.includes(idx));
+                        if(ship) {
+                            ship.hits++;
+                            if(ship.hits >= ship.indices.length) {
+                                result = 2; 
+                                ship.indices.forEach(i => this.myBoard[i] = 4);
+                            }
+                        }
+                    } else if (this.myBoard[idx] === 0) {
+                        this.myBoard[idx] = 3; 
+                    }
+
+                    this.renderGrid('playerGrid', this.myBoard, true);
+                    
+                    setTimeout(() => {
+                        this.modem.transmit(2, result);
+                    }, 2000);
+                    
+                    document.getElementById('phaseDisplay').innerText = "ENEMY TURN";
+                }
+                else if (type === 2) { // RESULT
+                    const result = payload; 
+                    app.log(`TARGET REPORT: ${result === 0 ? "MISS" : (result === 2 ? "SHIP SUNK!" : "HIT")}`);
+                    
+                    if(this.lastTarget !== -1) {
+                        if(result === 0) this.enemyBoard[this.lastTarget] = 3; 
+                        else if(result === 1) this.enemyBoard[this.lastTarget] = 2; 
+                        else if(result === 2) this.enemyBoard[this.lastTarget] = 4; 
+                        this.renderGrid('enemyGrid', this.enemyBoard, false);
+                        this.lastTarget = -1;
+                    }
+
+                    document.getElementById('phaseDisplay').innerText = "READY TO FIRE";
+                }
+            }
+        }
+
+        const app = {
+            modem: new AudioModem(),
+            game: null,
+            init: async () => {
+                const btn = document.getElementById('initBtn');
+                btn.innerText = "REQUESTING...";
+                
+                const audible = document.getElementById('audibleMode').checked;
+                const mode = audible ? 'AUDIBLE' : 'ULTRASONIC';
+                
+                try {
+                    const success = await app.modem.init(mode);
+                    if(success) {
+                        document.getElementById('initOverlay').classList.add('hidden');
+                        document.getElementById('gameUI').classList.remove('hidden');
+                        document.getElementById('gameUI').classList.add('flex');
+                        
+                        app.game = new BattleshipGame(app.modem);
+                        app.game.init();
+                        window.game = app.game; 
+                        app.log(`COMMS ONLINE. MODE: ${mode}`);
+                    } else {
+                         btn.innerText = "RETRY INITIALIZE";
+                    }
+                } catch(e) {
+                    alert("Initialization failed: " + e.message);
+                    btn.innerText = "RETRY INITIALIZE";
+                }
+            },
+            log: (msg) => {
+                const el = document.getElementById('gameLog');
+                if(!el) return;
+                const line = document.createElement('div');
+                line.innerText = `> ${msg}`;
+                el.appendChild(line);
+                el.scrollTop = el.scrollHeight;
+            }
+        };
+    </script>
+</body>
+</html>
