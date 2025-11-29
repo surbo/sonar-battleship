@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sonar Battleship</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+        body {
+            background-color: #051a05;
+            color: #4ade80;
+            font-family: 'VT323', monospace;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* CRT Scanline Effect */
+        .scanline {
+            width: 100%;
+            height: 100px;
+            z-index: 10;
+            background: linear-gradient(0deg, rgba(0,0,0,0) 0%, rgba(74, 222, 128, 0.1) 50%, rgba(0,0,0,0) 100%);
+            opacity: 0.1;
+            position: absolute;
+            bottom: 100%;
+            animation: scanline 10s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes scanline {
+            0% { bottom: 100%; }
+            100% { bottom: -100px; }
+        }
+
+        .crt-flicker {
+            animation: flicker 0.15s infinite;
+        }
+
+        @keyframes flicker {
+            0% { opacity: 0.95; }
+            50% { opacity: 1.0; }
+            100% { opacity: 0.98; }
+        }
+
+        .grid-cell {
+            aspect-ratio: 1;
+            border: 1px solid #14532d;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.7rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .grid-cell:hover {
+            background-color: #14532d;
+        }
+
+        .grid-cell.hit { background-color: #ef4444; box-shadow: 0 0 10px #ef4444; border-color: #ef4444; }
+        .grid-cell.miss { background-color: #9ca3af; opacity: 0.5; }
+        .grid-cell.ship { background-color: #4ade80; box-shadow: 0 0 5px #4ade80; }
+        .grid-cell.sunk { background-color: #7f1d1d; border-color: #ef4444; }
+
+        .sonar-container {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: 2px solid #4ade80;
+            overflow: hidden;
+            background: #000;
+        }
+        
+        .sonar-sweep {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 50%;
+            height: 2px;
+            background: #4ade80;
+            transform-origin: 0 0;
+            animation: sweep 2s infinite linear;
+            box-shadow: 0 0 10px #4ade80;
+        }
+
+        @keyframes sweep {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .modal {
+            background: rgba(5, 26, 5, 0.95);
+            border: 2px solid #4ade80;
+            box-shadow: 0 0 20px #4ade80;
+        }
+
+        @media (max-width: 600px) {
+            .grid-label { font-size: 0.6rem; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col crt-flicker relative">
+    <div class="scanline"></div>
+
+    <!-- Initialization Overlay -->
+    <div id="initOverlay" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-95 p-4">
+        <div class="modal max-w-md w-full p-6 text-center">
+            <h1 class="text-4xl mb-4 font-bold tracking-widest text-green-400">SONAR BATTLESHIP</h1>
+            <p class="mb-6 text-green-200 text-lg">
+                This game uses high-frequency audio to communicate with your opponent.
+                <br><br>
+                1. Open on two devices nearby.<br>
+                2. Turn volume UP (70%).<br>
+                3. Grant Mic permissions.
+            </p>
+            <div class="flex flex-col gap-4 justify-center">
+                 <button onclick="app.init()" class="bg-green-600 hover:bg-green-500 text-black font-bold py-3 px-8 text-xl rounded shadow-[0_0_15px_rgba(74,222,128,0.5)] transition-all">
+                    INITIALIZE COMMS
+                </button>
+                
+                <div class="flex gap-2">
+                    <button onclick="downloadGame()" class="flex-1 bg-transparent border border-green-600 hover:bg-green-900 text-green-400 font-bold py-2 px-2 rounded transition-all text-sm">
+                        SAVE FILE
+                    </button>
+                    <button onclick="copyGameCode()" class="flex-1 bg-transparent border border-green-600 hover:bg-green-900 text-green-400 font-bold py-2 px-2 rounded transition-all text-sm">
+                        COPY CODE
+                    </button>
+                </div>
+
+                <div class="flex items-center justify-center gap-2 mt-2">
+                    <input type="checkbox" id="audibleMode" class="w-5 h-5 accent-green-500">
+                    <label for="audibleMode" class="text-green-300">Audible Mode (Debug)</label>
+                </div>
+            </div>
+            <p class="mt-4 text-xs text-green-700">Warning: Requires quiet environment.</p>
+        </div>
+    </div>
+
+    <!-- Main Game UI -->
+    <div id="gameUI" class="flex-grow flex flex-col p-2 md:p-4 hidden">
+        
+        <header class="flex justify-between items-center mb-4 border-b border-green-800 pb-2">
+            <div class="flex items-center gap-4">
+                <div class="sonar-container">
+                    <div class="sonar-sweep"></div>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold leading-none">SONAR LINK</h1>
+                    <div id="connectionStatus" class="text-sm text-green-500 animate-pulse">STANDBY</div>
+                </div>
+            </div>
+            <div class="text-right">
+                <div id="phaseDisplay" class="text-xl font-bold text-yellow-400">SETUP PHASE</div>
+                <div class="text-xs text-green-600">FREQ: <span id="freqDisplay">--</span> Hz</div>
+            </div>
+        </header>
+
+        <div class="h-16 w-full bg-black border border-green-900 mb-4 relative overflow-hidden rounded">
+            <canvas id="visualizer" class="w-full h-full opacity-50"></canvas>
+            <div class="absolute top-1 left-2 text-xs text-green-700">SPECTRUM ANALYZER</div>
+        </div>
+
+        <div class="flex flex-col md:flex-row gap-4 md:gap-8 justify-center items-start flex-grow">
+            
+            <div class="w-full max-w-[400px] mx-auto">
+                <div class="flex justify-between mb-1">
+                    <h2 class="text-lg">ENEMY SECTOR</h2>
+                    <span id="enemyStatus" class="text-sm text-red-400">TARGETING...</span>
+                </div>
+                <div id="enemyGrid" class="grid grid-cols-10 gap-0.5 bg-green-900 border-2 border-green-700 p-1 shadow-[0_0_15px_rgba(74,222,128,0.2)]">
+                </div>
+            </div>
+
+            <div class="w-full max-w-[400px] mx-auto">
+                <div class="flex justify-between mb-1">
+                    <h2 class="text-lg">HOME SECTOR</h2>
+                    <div class="flex gap-2">
+                         <button id="autoPlaceBtn" onclick="game.autoPlaceShips()" class="text-xs bg-green-800 px-2 py-1 hover:bg-green-700 border border-green-600">AUTO-PLACE</button>
+                         <button id="resetBtn" onclick="game.resetBoard()" class="text-xs bg-red-900 px-2 py-1 hover:bg-red-800 border border-red-600">CLEAR</button>
+                    </div>
+                </div>
+                <div id="playerGrid" class="grid grid-cols-10 gap-0.5 bg-black border-2 border-green-900 p-1 opacity-90">
+                </div>
+            </div>
+
+        </div>
+
+        <div class="mt-4 border-t border-green-900 pt-2">
+            <div class="flex justify-between items-end">
+                <div id="gameLog" class="h-24 w-full md:w-2/3 overflow-y-auto text-sm text-green-400 font-mono bg-black bg-opacity-50 p-2 border border-green-900">
+                    <div>> SYSTEM INITIALIZED...</div>
+                </div>
+                <div class="ml-4 flex flex-col gap-2 w-1/3 md:w-auto">
+                    <button id="startGameBtn" onclick="game.finalizeSetup()" class="bg-green-600 text-black font-bold py-2 px-4 rounded hover:bg-green-500 shadow-lg hidden">
+                        START MISSION
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOWNLOAD & SHARE LOGIC ---
+        
+        function getCleanHTML() {
+            // Get current HTML
+            const docClone = document.documentElement.cloneNode(true);
+            
+            // RESET UI STATE
+            const overlay = docClone.querySelector('#initOverlay');
+            const gameUI = docClone.querySelector('#gameUI');
+            const log = docClone.querySelector('#gameLog');
+            const pGrid = docClone.querySelector('#playerGrid');
+            const eGrid = docClone.querySelector('#enemyGrid');
+
+            if (overlay) overlay.classList.remove('hidden');
+            if (gameUI) {
+                gameUI.classList.add('hidden');
+                gameUI.classList.remove('flex');
+            }
+            if (log) log.innerHTML = '<div>> SYSTEM INITIALIZED...</div>';
+            if (pGrid) pGrid.innerHTML = ''; 
+            if (eGrid) eGrid.innerHTML = '';
+            
+            // Remove the scripts injected by preview tools if any
+            const scripts = docClone.querySelectorAll('script');
+            // We keep the last script (our game logic) but might want to be careful
+            // For now, we assume the file is self contained.
+
+            return "<!DOCTYPE html>\n" + docClone.outerHTML;
+        }
+
+        function downloadGame() {
+            try {
+                const htmlContent = getCleanHTML();
+                const blob = new Blob([htmlContent], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'sonar_battleship.html';
+                
+                document.body.appendChild(a);
+                a.click();
+                
+                // Cleanup
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+                
+                alert("Download Started! Check your notifications.\n\nNOTE: You must UPLOAD this file to a site like 'tiiny.host' to play. Opening it directly will block the microphone.");
+            } catch (e) {
+                console.error("Download failed:", e);
+                alert("Download blocked by browser.\n\nOption 1: Use the 'Copy Code' button instead.\nOption 2: Use Chrome menu -> Share -> Print -> Save as PDF (not ideal) or 'Save Page As'.");
+            }
+        }
+
+        function copyGameCode() {
+            try {
+                const htmlContent = getCleanHTML();
+                navigator.clipboard.writeText(htmlContent).then(() => {
+                    alert("Game code copied to clipboard!\n\nPaste it into a text file named 'game.html' or send it via message.");
+                }).catch(err => {
+                    console.error(err);
+                    alert("Could not copy automatically. Please select all text and copy manually.");
+                });
+            } catch (e) {
+                alert("Copy failed.");
+            }
+        }
+
+
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            MODES: {
+                ULTRASONIC: { mark: 19000, space: 18000, preamble: 17500 },
+                AUDIBLE: { mark: 880, space: 440, preamble: 660 }
+            },
+            BIT_DURATION: 0.08, 
+            PREAMBLE_DURATION: 0.4, 
+            GRID_SIZE: 10,
+            SHIPS: [5, 4, 3, 3, 2] 
+        };
+
+        // --- AUDIO MODEM CLASS ---
+        class AudioModem {
+            constructor() {
+                this.ctx = null;
+                this.analyser = null;
+                this.isListening = false;
+                this.msgQueue = [];
+                this.callback = null;
+                this.mode = 'ULTRASONIC';
+                this.threshold = -50;
+                this.lastDetectTime = 0;
+            }
+
+            async init(mode = 'ULTRASONIC') {
+                this.mode = mode;
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                
+                // SECURITY CHECK
+                if (window.location.protocol === 'file:') {
+                     alert("⚠️ SECURITY RESTRICTION ⚠️\n\nAndroid Chrome disables the microphone for files opened directly from storage (file://).\n\nHOW TO FIX:\n1. Upload this file to a free host like 'tiiny.host' or 'Netlify Drop'.\n2. Open the LINK they give you.\n\nThe game will work perfectly over a link (HTTPS).");
+                     return false;
+                }
+                
+                this.ctx = new AudioContext();
+                
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+                    const source = this.ctx.createMediaStreamSource(stream);
+                    this.analyser = this.ctx.createAnalyser();
+                    this.analyser.fftSize = 2048;
+                    this.analyser.smoothingTimeConstant = 0.5;
+                    source.connect(this.analyser);
+                    
+                    this.startListening();
+                    return true;
+                } catch (e) {
+                    console.error("Mic Error:", e);
+                    alert("Microphone access denied. \n\nIf you are opening this file directly, please read the previous popup about hosting it online.");
+                    return false;
+                }
+            }
+
+            getFreqs() { return CONFIG.MODES[this.mode]; }
+
+            async transmit(type, payload) {
+                if(this.ctx.state === 'suspended') await this.ctx.resume();
+                
+                let bits = [];
+                for(let i=0; i<4; i++) bits.push((type >> i) & 1);
+                for(let i=0; i<8; i++) bits.push((payload >> i) & 1);
+
+                app.log(`Transmitting: TYPE ${type}, PAYLOAD ${payload}`);
+                this.playSequence(bits);
+            }
+
+            playSequence(bits) {
+                const freqs = this.getFreqs();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                
+                const now = this.ctx.currentTime;
+                let t = now;
+
+                osc.frequency.setValueAtTime(freqs.preamble, t);
+                gain.gain.setValueAtTime(1, t);
+                t += CONFIG.PREAMBLE_DURATION;
+
+                gain.gain.setValueAtTime(0, t);
+                t += 0.05;
+
+                osc.frequency.setValueAtTime(freqs.mark, t);
+                gain.gain.setValueAtTime(1, t);
+                t += CONFIG.BIT_DURATION;
+
+                bits.forEach(bit => {
+                    const f = bit === 1 ? freqs.mark : freqs.space;
+                    osc.frequency.setValueAtTime(f, t);
+                    t += CONFIG.BIT_DURATION;
+                });
+
+                osc.frequency.setValueAtTime(freqs.space, t);
+                t += CONFIG.BIT_DURATION;
+
+                osc.stop(t);
+                
+                const duration = (t - now) * 1000;
+                const statusEl = document.getElementById('connectionStatus');
+                statusEl.innerText = "TRANSMITTING...";
+                statusEl.classList.remove('text-green-500');
+                statusEl.classList.add('text-yellow-400');
+                
+                setTimeout(() => {
+                    statusEl.innerText = "LISTENING...";
+                    statusEl.classList.add('text-green-500');
+                    statusEl.classList.remove('text-yellow-400');
+                }, duration);
+            }
+
+            startListening() {
+                this.isListening = true;
+                const bufferLength = this.analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                const processFrame = () => {
+                    if (!this.isListening) return;
+                    requestAnimationFrame(processFrame);
+                    this.analyser.getByteFrequencyData(dataArray);
+                    this.drawVisualizer(dataArray);
+                    this.detectSignal(dataArray);
+                };
+                processFrame();
+            }
+
+            detectSignal(dataArray) {
+                const freqs = this.getFreqs();
+                const sampleRate = this.ctx.sampleRate;
+                const binSize = sampleRate / (this.analyser.fftSize); 
+
+                const getEnergy = (f) => {
+                    const bin = Math.floor(f / binSize);
+                    return (dataArray[bin-1] + dataArray[bin] + dataArray[bin+1]) / 3; 
+                };
+
+                const preambleEnergy = getEnergy(freqs.preamble);
+                const now = Date.now();
+
+                if (now - this.lastDetectTime < 2000) return; 
+
+                if (preambleEnergy > 150) {
+                    console.log("Preamble Detected!");
+                    this.lastDetectTime = now; 
+                    
+                    const statusEl = document.getElementById('connectionStatus');
+                    statusEl.innerText = "RECEIVING SIGNAL...";
+                    statusEl.classList.add('text-red-5
